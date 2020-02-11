@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.ReentrantLock
 import java.util.{Comparator, Deque, PriorityQueue, Queue}
 
-import akka.actor.{ActorCell, ActorRef, ActorSystem, DeadLetter, InternalActorRef, MessageBundle, Transition}
+import akka.actor.{ActorCell, ActorRef, ActorSystem, DeadLetter, InternalActorRef, MessageBundle, MyTransition}
 import akka.dispatch.sysmsg._
 import akka.event.Logging.Error
 import akka.util.Helpers.ConfigOps
@@ -848,7 +848,7 @@ object MyControlAwareMailbox {
     private var unNotified: Vector[ActorRef] = Vector[ActorRef]()
     //myNote
     //history defined here, i guess this is right, but maybe you need to change it.
-    val history: Vector[Transition] = Vector[Transition]()
+    val history: Vector[MyTransition] = Vector[MyTransition]()
 
     //MyNote
     //you should implement the algorithm here.
@@ -857,7 +857,7 @@ object MyControlAwareMailbox {
     {
 
       var answer = true
-      val transition: Transition = new Transition(from, to, messageBundle, regTransiton)
+      val transition: MyTransition = new MyTransition(from, to, messageBundle, regTransiton)
       if (history.contains(transition))
         answer = true
       else
@@ -881,7 +881,7 @@ object MyControlAwareMailbox {
       //if we want to block the actor wholly we can put a while(unNotified.isempty() == false) here to pop till empty
       if (controlMsg ne null) {
         controlMsg.message match {
-          case AskControlMessage(Transition(from, to, messageBundle, regTransition), asker) ⇒ tellStatusToSender(from, to, messageBundle, regTransition, asker)
+          case AskControlMessage(MyTransition(from, to, messageBundle, regTransition), asker) ⇒ tellStatusToSender(from, to, messageBundle, regTransition, asker)
           case NotifyControlMessage(asker) ⇒ unNotified.filter(_ != asker)
           case _ ⇒ print(s"match case failed")
         }

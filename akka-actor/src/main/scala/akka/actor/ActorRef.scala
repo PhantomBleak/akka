@@ -19,7 +19,14 @@ import akka.event.Logging
 import akka.event.MarkerLoggingAdapter
 import akka.serialization.JavaSerializer
 import akka.serialization.Serialization
-import akka.util.OptionVal
+import akka.util.{OptionVal, Timeout}
+import akka.pattern.ask
+
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.Failure
+import akka.dispatch.Mailbox
+import scala.concurrent.duration._
+
 
 object ActorRef {
 
@@ -302,13 +309,13 @@ private[akka] case object Nobody extends MinimalActorRef {
  *  INTERNAL API
  */
 private[akka] class LocalActorRef private[akka] (
-    _system: ActorSystemImpl,
-    _props: Props,
-    _dispatcher: MessageDispatcher,
-    _mailboxType: MailboxType,
-    _supervisor: InternalActorRef,
-    override val path: ActorPath)
-    extends ActorRefWithCell
+                                                  _system: ActorSystemImpl,
+                                                  _props: Props,
+                                                  _dispatcher: MessageDispatcher,
+                                                  _mailboxType: MailboxType,
+                                                  _supervisor: InternalActorRef,
+                                                  override val path: ActorPath)
+  extends ActorRefWithCell
     with LocalRef {
 
   /*
@@ -325,11 +332,11 @@ private[akka] class LocalActorRef private[akka] (
   actorCell.init(sendSupervise = true, _mailboxType)
 
   protected def newActorCell(
-      system: ActorSystemImpl,
-      ref: InternalActorRef,
-      props: Props,
-      dispatcher: MessageDispatcher,
-      supervisor: InternalActorRef): ActorCell =
+                              system: ActorSystemImpl,
+                              ref: InternalActorRef,
+                              props: Props,
+                              dispatcher: MessageDispatcher,
+                              supervisor: InternalActorRef): ActorCell =
     new ActorCell(system, ref, props, dispatcher, supervisor)
 
   protected def actorContext: ActorContext = actorCell
@@ -355,7 +362,7 @@ private[akka] class LocalActorRef private[akka] (
    * be processed until resumed.
    */
   override def suspend(): Unit = actorCell.suspend()
-
+  //def ask(actor: Any, msg: Any) = ???
   /**
    * Resumes a suspended actor.
    */
@@ -413,8 +420,84 @@ private[akka] class LocalActorRef private[akka] (
 
   override def restart(cause: Throwable): Unit = actorCell.restart(cause)
 
-  @throws(classOf[java.io.ObjectStreamException])
-  protected def writeReplace(): AnyRef = SerializedActorRef(this)
+
+  def !!(receiver: ActorRef, message: Any, sender: ActorRef, automata: Automata): Unit = {
+    //MyNote
+    //TODO preDispatch
+    //search for pres in automata
+    //send ask messages to pres
+    //w8 for response
+    //decide what to do (send message or abort)
+
+    //assume that we have the automata in the Actor
+    var errorSent: Boolean = false
+    val msgBundle: MessageBundle = new MessageBundle(receiver, message, sender)
+    //for all transitions
+    val transitions = automata.findTransitionByMessageBundle(msgBundle)
+    var transitionStatus: Vector[Int] = Vector.empty[Int]
+
+    var allPres: Vector[MyTransition] = Vector.empty[MyTransition]
+    for (transition ← transitions) {
+      val pres: Vector[MyTransition] = automata.singleFindPre(transition)
+      allPres = allPres ++ pres
+      var tellList: Vector[Future[TellControlMessage]] = Vector.empty[Future[TellControlMessage]]
+      for (pre ← pres) {
+        val msg: MessageBundle = pre.messageBundle
+        //send transition not msg
+        val ctrlMsg = AskControlMessage(MyTransition(pre.from, pre.to, msg, true), sender)
+        implicit val timeout = Timeout(3.seconds)
+        val future: Future[TellControlMessage] = ask(msg.s, ctrlMsg).mapTo[TellControlMessage]
+        tellList = tellList :+ future
+      }
+      implicit val ec = ExecutionContext.global
+      val all = Future.sequence(tellList)
+      var preSent: Int = 0
+      all.onComplete {
+        case scala.util.Success(result) ⇒ {
+          for (tellRes ← result) {
+            if (tellRes.flag == true) {
+              preSent = preSent + 1
+            }
+          }
+        }
+        case Failure(_) => println("Failure with Future")
+      }
+      transitionStatus = transitionStatus :+ preSent
+      if (preSent >= 1) {
+        if (automata.isLastTransition(transition)) {
+          receiver ! "error"
+          errorSent = true
+        }
+      }
+    }
+    if (errorSent == false) {
+      for (status <- transitionStatus) {
+        if (status >= 1) {
+
+        }
+      }
+      receiver ! message
+    }
+    //send notif
+    for (pre ← allPres) {
+      val msg: MessageBundle = pre.messageBundle
+      val notifMsg = NotifyControlMessage(msg)
+      msg.s ! notifMsg
+    }
+    // val msgBundle: MessageBundle = new MessageBundle(receiver, message, sender)
+    // val transitions = automata.findTransitionByMessageBundle(msgBundle)
+    // automata.findPre(transitions)
+    // val msgB: MessageBundle = new MessageBundle(msgB.sender, msgB.message,msgB.receiver) //TODO change to message
+    // val answer:Boolean = sendAskMessagesAndGetFlag(msgB)
+
+    // if (answer)
+    //   this.!(message, sender)
+    //MyNote
+    //TODO check again
+    //double check "history" implementation
+  }
+    @throws(classOf[java.io.ObjectStreamException])
+    protected def writeReplace(): AnyRef = SerializedActorRef(this)
 }
 
 /**
@@ -434,7 +517,7 @@ private[akka] final case class SerializedActorRef private (path: String) {
     case null =>
       throw new IllegalStateException(
         "Trying to deserialize a serialized ActorRef without an ActorSystem in scope." +
-        " Use 'akka.serialization.JavaSerializer.currentSystem.withValue(system) { ... }'")
+          " Use 'akka.serialization.JavaSerializer.currentSystem.withValue(system) { ... }'")
     case someSystem =>
       someSystem.provider.resolveActorRef(path)
   }
@@ -511,7 +594,7 @@ trait DeadLetterSuppression
  */
 @SerialVersionUID(1L)
 final case class SuppressedDeadLetter(message: DeadLetterSuppression, sender: ActorRef, recipient: ActorRef)
-    extends AllDeadLetters {
+  extends AllDeadLetters {
   require(sender ne null, "DeadLetter sender may not be null")
   require(recipient ne null, "DeadLetter recipient may not be null")
 }
@@ -572,10 +655,10 @@ private[akka] object DeadLetterActorRef {
  * INTERNAL API
  */
 private[akka] class EmptyLocalActorRef(
-    override val provider: ActorRefProvider,
-    override val path: ActorPath,
-    val eventStream: EventStream)
-    extends MinimalActorRef {
+                                        override val provider: ActorRefProvider,
+                                        override val path: ActorPath,
+                                        val eventStream: EventStream)
+  extends MinimalActorRef {
 
   override private[akka] def isTerminated = true
 
@@ -634,7 +717,7 @@ private[akka] class EmptyLocalActorRef(
  * INTERNAL API
  */
 private[akka] class DeadLetterActorRef(_provider: ActorRefProvider, _path: ActorPath, _eventStream: EventStream)
-    extends EmptyLocalActorRef(_provider, _path, _eventStream) {
+  extends EmptyLocalActorRef(_provider, _path, _eventStream) {
 
   override def !(message: Any)(implicit sender: ActorRef = this): Unit = message match {
     case null                => throw InvalidMessageException("Message is null")
@@ -664,11 +747,11 @@ private[akka] class DeadLetterActorRef(_provider: ActorRefProvider, _path: Actor
  * INTERNAL API
  */
 private[akka] class VirtualPathContainer(
-    override val provider: ActorRefProvider,
-    override val path: ActorPath,
-    override val getParent: InternalActorRef,
-    val log: MarkerLoggingAdapter)
-    extends MinimalActorRef {
+                                          override val provider: ActorRefProvider,
+                                          override val path: ActorPath,
+                                          override val getParent: InternalActorRef,
+                                          val log: MarkerLoggingAdapter)
+  extends MinimalActorRef {
 
   private val children = new ConcurrentHashMap[String, InternalActorRef]
 
@@ -776,11 +859,11 @@ private[akka] class VirtualPathContainer(
  * from an ordinary actor.
  */
 private[akka] final class FunctionRef(
-    override val path: ActorPath,
-    override val provider: ActorRefProvider,
-    system: ActorSystem,
-    f: (ActorRef, Any) => Unit)
-    extends MinimalActorRef {
+                                       override val path: ActorPath,
+                                       override val provider: ActorRefProvider,
+                                       system: ActorSystem,
+                                       f: (ActorRef, Any) => Unit)
+  extends MinimalActorRef {
 
   override def !(message: Any)(implicit sender: ActorRef = Actor.noSender): Unit = {
     message match {

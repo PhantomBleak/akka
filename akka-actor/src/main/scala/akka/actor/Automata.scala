@@ -15,10 +15,10 @@ package akka.actor
 //use this.init() for hard coding the initiation.
 
 private[akka] class Automata {
-  var transitions: Vector[Transition] = Vector.empty[Transition]
+  var transitions: Vector[MyTransition] = Vector.empty[MyTransition]
   var lastTransitions: Vector[Int] = Vector.empty[Int]
 
-  def addTransition(newTransition: Transition): Unit =
+  def addTransition(newTransition: MyTransition): Unit =
   {
     transitions = transitions :+ newTransition
   }
@@ -28,9 +28,9 @@ private[akka] class Automata {
     lastTransitions = lastTransitions :+ lastTran
   }
 
-  def findPre(inputTransitions: Vector[Transition]): Vector[Transition] =
+  def findPre(inputTransitions: Vector[MyTransition]): Vector[MyTransition] =
   {
-    var returnVar: Vector[Transition] = Vector.empty[Transition]
+    var returnVar: Vector[MyTransition] = Vector.empty[MyTransition]
     for (inputTransition ← inputTransitions)
       for (transition ← transitions) {
         if (transition.to == inputTransition.from)
@@ -39,16 +39,25 @@ private[akka] class Automata {
     returnVar
   }
 
-  def findTransitionByMessageBundle(messageBundle: MessageBundle): Vector[Transition] = //returns vector[Transition] of messageBundles, null in case of not found
+  def singleFindPre(inputTransition: MyTransition): Vector[MyTransition] =
   {
-    var returnVar: Vector[Transition] = Vector.empty[Transition]
+    var returnVar: Vector[MyTransition] = Vector.empty[MyTransition]
+      for (transition ← transitions) {
+        if (transition.to == inputTransition.from)
+          returnVar = returnVar :+ transition
+      }
+    returnVar
+  }
+  def findTransitionByMessageBundle(messageBundle: MessageBundle): Vector[MyTransition] = //returns vector[Transition] of messageBundles, null in case of not found
+  {
+    var returnVar: Vector[MyTransition] = Vector.empty[MyTransition]
     for (transition ← transitions)
       if (transition.messageBundle == messageBundle)
         returnVar = returnVar :+ transition
     returnVar
   }
 
-  def isLastTransition(inputTransition: Transition): Boolean = //returns true if this is one of the lsat transitions, false otherwise
+  def isLastTransition(inputTransition: MyTransition): Boolean = //returns true if this is one of the lsat transitions, false otherwise
   {
     if (lastTransitions.isEmpty)
       return false
@@ -65,13 +74,13 @@ private[akka] class Automata {
 
 }
 
-   class MessageBundle(sender: ActorRef, message: Any, receiver: ActorCell) {
+   class MessageBundle(sender: ActorRef, message: Any, receiver: ActorRef) {
      val s=sender
      val m=message
      val r=receiver
    }
 
-private[akka] case class Transition(from: Int, to: Int, messageBundle: MessageBundle, regTransition: Boolean) {
+private[akka] case class MyTransition(from: Int, to: Int, messageBundle: MessageBundle, regTransition: Boolean) {
 
   //MyNote
   //if true, this is regular transition, else, negative transition
