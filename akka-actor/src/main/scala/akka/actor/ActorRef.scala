@@ -1,16 +1,17 @@
 /*
- * Copyright (C) 2009-2019 Lightbend Inc. <https://www.lightbend.com>
+ * Copyright (C) 2009-2020 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.actor
 
 import java.util.concurrent.ConcurrentHashMap
 
-import akka.annotation.InternalApi
-
 import scala.annotation.tailrec
 import scala.collection.immutable
 import scala.util.control.NonFatal
+
+import akka.annotation.DoNotInherit
+import akka.annotation.InternalApi
 import akka.dispatch._
 import akka.dispatch.sysmsg._
 import akka.event.AddressTerminatedTopic
@@ -19,14 +20,7 @@ import akka.event.Logging
 import akka.event.MarkerLoggingAdapter
 import akka.serialization.JavaSerializer
 import akka.serialization.Serialization
-import akka.util.{OptionVal, Timeout}
-import akka.pattern.ask
-
-import scala.concurrent.{ExecutionContext, Future}
-import scala.util.Failure
-import akka.dispatch.Mailbox
-import scala.concurrent.duration._
-
+import akka.util.OptionVal
 
 object ActorRef {
 
@@ -362,7 +356,7 @@ private[akka] class LocalActorRef private[akka] (
    * be processed until resumed.
    */
   override def suspend(): Unit = actorCell.suspend()
-  //def ask(actor: Any, msg: Any) = ???
+
   /**
    * Resumes a suspended actor.
    */
@@ -420,84 +414,8 @@ private[akka] class LocalActorRef private[akka] (
 
   override def restart(cause: Throwable): Unit = actorCell.restart(cause)
 
-
-  def !!(receiver: ActorRef, message: Any, sender: ActorRef, automata: Automata): Unit = {
-    //MyNote
-    //TODO preDispatch
-    //search for pres in automata
-    //send ask messages to pres
-    //w8 for response
-    //decide what to do (send message or abort)
-
-    //assume that we have the automata in the Actor
-    var errorSent: Boolean = false
-    val msgBundle: MessageBundle = new MessageBundle(receiver, message, sender)
-    //for all transitions
-    val transitions = automata.findTransitionByMessageBundle(msgBundle)
-    var transitionStatus: Vector[Int] = Vector.empty[Int]
-
-    var allPres: Vector[MyTransition] = Vector.empty[MyTransition]
-    for (transition ← transitions) {
-      val pres: Vector[MyTransition] = automata.singleFindPre(transition)
-      allPres = allPres ++ pres
-      var tellList: Vector[Future[TellControlMessage]] = Vector.empty[Future[TellControlMessage]]
-      for (pre ← pres) {
-        val msg: MessageBundle = pre.messageBundle
-        //send transition not msg
-        val ctrlMsg = AskControlMessage(MyTransition(pre.from, pre.to, msg, true), sender)
-        implicit val timeout = Timeout(3.seconds)
-        val future: Future[TellControlMessage] = ask(msg.s, ctrlMsg).mapTo[TellControlMessage]
-        tellList = tellList :+ future
-      }
-      implicit val ec = ExecutionContext.global
-      val all = Future.sequence(tellList)
-      var preSent: Int = 0
-      all.onComplete {
-        case scala.util.Success(result) ⇒ {
-          for (tellRes ← result) {
-            if (tellRes.flag == true) {
-              preSent = preSent + 1
-            }
-          }
-        }
-        case Failure(_) => println("Failure with Future")
-      }
-      transitionStatus = transitionStatus :+ preSent
-      if (preSent >= 1) {
-        if (automata.isLastTransition(transition)) {
-          receiver ! "error"
-          errorSent = true
-        }
-      }
-    }
-    if (errorSent == false) {
-      for (status <- transitionStatus) {
-        if (status >= 1) {
-
-        }
-      }
-      receiver ! message
-    }
-    //send notif
-    for (pre ← allPres) {
-      val msg: MessageBundle = pre.messageBundle
-      val notifMsg = NotifyControlMessage(msg)
-      msg.s ! notifMsg
-    }
-    // val msgBundle: MessageBundle = new MessageBundle(receiver, message, sender)
-    // val transitions = automata.findTransitionByMessageBundle(msgBundle)
-    // automata.findPre(transitions)
-    // val msgB: MessageBundle = new MessageBundle(msgB.sender, msgB.message,msgB.receiver) //TODO change to message
-    // val answer:Boolean = sendAskMessagesAndGetFlag(msgB)
-
-    // if (answer)
-    //   this.!(message, sender)
-    //MyNote
-    //TODO check again
-    //double check "history" implementation
-  }
-    @throws(classOf[java.io.ObjectStreamException])
-    protected def writeReplace(): AnyRef = SerializedActorRef(this)
+  @throws(classOf[java.io.ObjectStreamException])
+  protected def writeReplace(): AnyRef = SerializedActorRef(this)
 }
 
 /**
@@ -559,10 +477,60 @@ private[akka] trait MinimalActorRef extends InternalActorRef with LocalRef {
 }
 
 /**
+ * An ActorRef that ignores any incoming messages.
+ *
+ * INTERNAL API
+ */
+@InternalApi private[akka] final class IgnoreActorRef(override val provider: ActorRefProvider) extends MinimalActorRef {
+
+  override val path: ActorPath = IgnoreActorRef.path
+
+  @throws(classOf[java.io.ObjectStreamException])
+  override protected def writeReplace(): AnyRef = SerializedIgnore
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalApi private[akka] object IgnoreActorRef {
+
+  private val fakeSystemName = "local"
+
+  val path: ActorPath =
+    RootActorPath(Address("akka", IgnoreActorRef.fakeSystemName)) / "ignore"
+
+  private val pathString = path.toString
+
+  /**
+   * Check if the passed `otherPath` is the same as IgnoreActorRef.path
+   */
+  def isIgnoreRefPath(otherPath: String): Boolean =
+    pathString == otherPath
+
+  /**
+   * Check if the passed `otherPath` is the same as IgnoreActorRef.path
+   */
+  def isIgnoreRefPath(otherPath: ActorPath): Boolean =
+    path == otherPath
+
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalApi @SerialVersionUID(1L) private[akka] object SerializedIgnore extends Serializable {
+  @throws(classOf[java.io.ObjectStreamException])
+  private def readResolve(): AnyRef = IgnoreActorRef
+}
+
+/**
  * Subscribe to this class to be notified about all [[DeadLetter]] (also the suppressed ones)
  * and [[Dropped]].
+ *
+ * Not for user extension
  */
-sealed trait AllDeadLetters extends WrappedMessage {
+@DoNotInherit
+trait AllDeadLetters extends WrappedMessage {
   def message: Any
   def sender: ActorRef
   def recipient: ActorRef
@@ -843,6 +811,15 @@ private[akka] class VirtualPathContainer(
 
 /**
  * INTERNAL API
+ */
+@InternalApi private[akka] object FunctionRef {
+  def deadLetterMessageHandler(system: ActorSystem): (ActorRef, Any) => Unit = { (sender, msg) =>
+    system.deadLetters.tell(msg, sender)
+  }
+}
+
+/**
+ * INTERNAL API
  *
  * This kind of ActorRef passes all received messages to the given function for
  * performing a non-blocking side-effect. The intended use is to transform the
@@ -858,17 +835,20 @@ private[akka] class VirtualPathContainer(
  * [[FunctionRef#unwatch]] must be called to avoid a resource leak, which is different
  * from an ordinary actor.
  */
-private[akka] final class FunctionRef(
-                                       override val path: ActorPath,
-                                       override val provider: ActorRefProvider,
-                                       system: ActorSystem,
-                                       f: (ActorRef, Any) => Unit)
+@InternalApi private[akka] final class FunctionRef(
+                                                    override val path: ActorPath,
+                                                    override val provider: ActorRefProvider,
+                                                    system: ActorSystem,
+                                                    f: (ActorRef, Any) => Unit)
   extends MinimalActorRef {
+
+  // var because it's replaced in `stop`
+  private var messageHandler: (ActorRef, Any) => Unit = f
 
   override def !(message: Any)(implicit sender: ActorRef = Actor.noSender): Unit = {
     message match {
       case AddressTerminated(address) => addressTerminated(address)
-      case _                          => f(sender, message)
+      case _                          => messageHandler(sender, message)
     }
   }
 
@@ -954,7 +934,13 @@ private[akka] final class FunctionRef(
     }
   }
 
-  override def stop(): Unit = sendTerminated()
+  override def stop(): Unit = {
+    sendTerminated()
+    // The messageHandler function may close over a large object graph (such as an Akka Stream)
+    // so we replace the messageHandler function to make that available for garbage collection.
+    // Doesn't matter if the change isn't visible immediately, volatile not needed.
+    messageHandler = FunctionRef.deadLetterMessageHandler(system)
+  }
 
   private def addWatcher(watchee: ActorRef, watcher: ActorRef): Unit = {
     val selfTerminated = this.synchronized {
